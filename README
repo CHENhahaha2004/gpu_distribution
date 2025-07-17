@@ -11,6 +11,10 @@ python run_sim.py --gpus 4 --strategy tensor --micro_batches 2 --plot
 --plot 结束后自动弹出甘特图
 执行后会生成 trace.csv 并在窗口展示 GPU 计算/通信时间线。
 
+git add .
+git commit -m "你的修改说明"
+git push
+
 
 gpu_distribution/
 │
