@@ -35,6 +35,9 @@ class GPU:
         self.recorder = recorder
         self.net_model = net_model
 
+        # Register mapping (used by send() to identify intra/inter-node links)
+        GPU._id_to_node[self.id] = self.node_id
+
     # ---------------------------------------------------------------------
     # Public SimPy processes
     # ---------------------------------------------------------------------
@@ -47,15 +50,31 @@ class GPU:
         self.recorder.log(self.id, "compute", name, start, end)
 
     def send(self, dst_gpu: int, size: int):
-        """Yield a *communication* process via the provided network model."""
+        """Yield a *communication* process via the provided network model.
+
+        This variant additionally annotates whether the transfer is intra-node
+        or inter-node so that downstream analysis can easily distinguish the
+        two cases without changing the Recorder interface.
+        """
         start = self.env.now
         # Delegate to network model which can insert contention/delay.
         yield self.env.process(self.net_model.transfer(self.id, dst_gpu, size, self.nic_bw))
         end = self.env.now
+
+        # -----------------------------
+        # Determine comm scope
+        # -----------------------------
+        # GPU instances may live on different nodes. We record the scope in the
+        # *name* field so that existing aggregation logic (which relies on the
+        # *type* field being exactly "compute"/"comm") remains untouched.
+        dst_node = getattr(self, "_id_to_node", {}).get(dst_gpu)
+        scope = "intra" if dst_node == self.node_id else "inter"
+        name_suffix = f" ({scope})"
+
         # Record on sender side
-        self.recorder.log(self.id, "comm", f"{self.id}->{dst_gpu}", start, end)
+        self.recorder.log(self.id, "comm", f"{self.id}->{dst_gpu}{name_suffix}", start, end)
         # Also record the corresponding receive event on dst GPU for timeline completeness
-        self.recorder.log(dst_gpu, "comm", f"{self.id}->{dst_gpu}", start, end)
+        self.recorder.log(dst_gpu, "comm", f"{self.id}->{dst_gpu}{name_suffix}", start, end)
 
     def recv(self, src_gpu: int, size: int):
         """Explicit receive call (not currently used by strategies)."""
@@ -63,3 +82,10 @@ class GPU:
         yield self.env.process(self.net_model.transfer(src_gpu, self.id, size, self.nic_bw))
         end = self.env.now
         self.recorder.log(self.id, "comm", f"{src_gpu}->{self.id}", start, end) 
+
+    # ---------------------------------------------------------------------
+    # Class-level helpers
+    # ---------------------------------------------------------------------
+    # Maintain a global mapping so that *send* can cheaply look up the node of
+    # the destination GPU.
+    _id_to_node: dict[int, int] = {} 

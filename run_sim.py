@@ -42,8 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plot", action="store_true", help="Plot the resulting Gantt chart")
     parser.add_argument("--plot_backend", type=str, choices=["matplotlib", "plotly"], default="matplotlib",
                         help="Backend used for plotting the Gantt chart")
-    parser.add_argument("--plot_view", type=str, choices=["per_gpu", "per_channel"], default="per_gpu",
-                        help="Gantt view: each GPU row or aggregated compute/comm channels")
+    parser.add_argument("--plot_view", type=str, choices=["per_gpu", "per_channel", "split"], default="per_gpu",
+                        help="Gantt view: per_gpu / per_channel / split (comm+compute rows)")
     return parser.parse_args()
 
 
@@ -84,11 +84,11 @@ def main() -> None:
     gpus = [GPU(env, gpu_id=i, node_id=(i // args.gpus_per_node), flops=args.flops, nic_bw=args.bw,
                 recorder=recorder, net_model=net) for i in range(num_gpus)]
 
-    # Build selected strategy
+    # 并行策略配置
     strategy = get_strategy(args.strategy, micro_batches=args.micro_batches, flops_per_batch=args.flops,
                              comm_size=args.comm_size)
 
-    # Launch simulation
+    # 模拟执行
     env.process(strategy.run(env, gpus, recorder))
     env.run()
 
@@ -108,20 +108,25 @@ def main() -> None:
     if args.plot:
         try:
             if args.plot_backend == "matplotlib":
-                # Matplotlib backend目前仅支持 per_gpu 视图
-                from visualization.plot import plot_gantt
-                plot_gantt(args.out)
+                from visualization.plot import plot_gantt, plot_gantt_split
+                if args.plot_view == "split":
+                    plot_gantt_split(args.out)
+                else:
+                    # default per_gpu view
+                    plot_gantt(args.out)
             else:  # plotly backend
                 if args.plot_view == "per_gpu":
                     from visualization.plot import plot_gantt_plotly
                     plot_gantt_plotly(args.out)
                 else:
-                    from visualization.plot import plot_gantt_by_channel
-                    plot_gantt_by_channel(args.out)
+                    from visualization.plot import plot_gantt_split, plot_gantt_by_channel
+                    if args.plot_view == "split":
+                        plot_gantt_split(args.out)
+                    else:
+                        plot_gantt_by_channel(args.out)
         except Exception as exc:  # pragma: no cover
             print("Failed to plot Gantt chart:", exc)
-    import pandas as pd
-    print(pd.read_csv('trace.csv').head())
+
 
 if __name__ == "__main__":
     main() 
