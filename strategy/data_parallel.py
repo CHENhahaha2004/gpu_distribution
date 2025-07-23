@@ -21,13 +21,21 @@ class DataParallelStrategy(ParallelStrategy):
 
         for mb in range(self.micro_batches):
             # --------------------------------------------------------------
-            # Step-1: Local forward/backward on all GPUs (no change)
+            # Step-1: Forward pass on all GPUs (local)
             # --------------------------------------------------------------
-            compute_events = [env.process(g.compute(f"mb{mb}_compute", self.flops_per_batch)) for g in gpus]
+            fwd_flop = self.flops_per_batch / 2.0
+            compute_events = [env.process(g.compute(f"mb{mb}_fwd", fwd_flop)) for g in gpus]
             yield simpy.events.AllOf(env, compute_events)
 
             # --------------------------------------------------------------
-            # Step-2: Intra-node gradient reduce – each non-leader GPU sends
+            # Step-2: Backward pass on all GPUs (local)
+            # --------------------------------------------------------------
+            bwd_flop = self.flops_per_batch / 2.0
+            compute_events = [env.process(g.compute(f"mb{mb}_bwd", bwd_flop)) for g in gpus]
+            yield simpy.events.AllOf(env, compute_events)
+
+            # --------------------------------------------------------------
+            # Step-3: Intra-node gradient reduce – each non-leader GPU sends
             #         its gradients to the node leader. (internal comms)
             # --------------------------------------------------------------
             comm_events = []
@@ -38,18 +46,18 @@ class DataParallelStrategy(ParallelStrategy):
             yield simpy.events.AllOf(env, comm_events)
 
             # --------------------------------------------------------------
-            # Step-3: Inter-node all-reduce among leaders (ring over leaders)
+            # Step-4: Inter-node all-reduce among leaders (ring over leaders)
             # --------------------------------------------------------------
             if len(leaders) > 1:
                 comm_events = []
                 num_leaders = len(leaders)
                 for idx, g in enumerate(leaders):
                     dst = leaders[(idx + 1) % num_leaders].id
-                comm_events.append(env.process(g.send(dst, self.comm_size)))
+                    comm_events.append(env.process(g.send(dst, self.comm_size)))
                 yield simpy.events.AllOf(env, comm_events)
 
             # --------------------------------------------------------------
-            # Step-4: Broadcast reduced gradients back to local GPUs
+            # Step-5: Broadcast reduced gradients back to local GPUs
             # --------------------------------------------------------------
             comm_events = []
             for node_id, grp in node_to_gpus.items():

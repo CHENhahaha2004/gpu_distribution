@@ -352,8 +352,8 @@ def plot_gantt_split(csv_path: str, *, show: bool = True, save_path: str | None 
 
     # Build legend: forward/backward sample, intra/inter
     legend_handles = [
-        Patch(color=fwd_palette[0], label="Forward (mb0)") ,
-        Patch(color=bwd_palette[0], label="Backward (mb0)"),
+        Patch(color=fwd_palette[0], label="Forward ") ,
+        Patch(color=bwd_palette[0], label="Backward "),
         Patch(color=color_map["intra"], label="Intra-node Comm"),
         Patch(facecolor=color_map["inter"], hatch="//", edgecolor="black", label="Inter-node Comm"),
     ]
