@@ -1,6 +1,6 @@
 import simpy
 from .base import BaseNetModel
-
+#理想网络模型：无竞争；时间 = 大小 / 带宽。
 
 class IdealNet(BaseNetModel):
     """Ideal network model: no contention; time = size / bandwidth."""

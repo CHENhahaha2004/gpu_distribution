@@ -25,10 +25,11 @@ class GPU:
         Network model responsible for point-to-point transfers.
     """
 
-    def __init__(self, env: simpy.Environment, gpu_id: int, flops: float, nic_bw: float,
+    def __init__(self, env: simpy.Environment, gpu_id: int, node_id: int, flops: float, nic_bw: float,
                  recorder: "Recorder", net_model: "BaseNetModel") -> None:
         self.env = env
         self.id = gpu_id
+        self.node_id = node_id
         self.flops = flops  # FLOPS (float operations per second)
         self.nic_bw = nic_bw  # bytes / second
         self.recorder = recorder
@@ -51,4 +52,14 @@ class GPU:
         # Delegate to network model which can insert contention/delay.
         yield self.env.process(self.net_model.transfer(self.id, dst_gpu, size, self.nic_bw))
         end = self.env.now
-        self.recorder.log(self.id, "comm", f"{self.id}->{dst_gpu}", start, end) 
+        # Record on sender side
+        self.recorder.log(self.id, "comm", f"{self.id}->{dst_gpu}", start, end)
+        # Also record the corresponding receive event on dst GPU for timeline completeness
+        self.recorder.log(dst_gpu, "comm", f"{self.id}->{dst_gpu}", start, end)
+
+    def recv(self, src_gpu: int, size: int):
+        """Explicit receive call (not currently used by strategies)."""
+        start = self.env.now
+        yield self.env.process(self.net_model.transfer(src_gpu, self.id, size, self.nic_bw))
+        end = self.env.now
+        self.recorder.log(self.id, "comm", f"{src_gpu}->{self.id}", start, end) 
