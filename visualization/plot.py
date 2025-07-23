@@ -241,11 +241,10 @@ def plot_gantt_split(csv_path: str, *, show: bool = True, save_path: str | None 
     def classify_phase(row):
         if row["type"] == "compute":
             name = str(row["name"]).lower()
-            if "fwd" in name or "forward" in name:
-                return "forward"
             if "bwd" in name or "backward" in name:
                 return "backward"
-            return "other"
+            # default all other compute as forward
+            return "forward"
         else:  # comm
             name = str(row["name"]).lower()
             if "inter" in name:
@@ -274,11 +273,11 @@ def plot_gantt_split(csv_path: str, *, show: bool = True, save_path: str | None 
     }
 
     # ----------------------------------
-    # y 轴映射
+    # y-axis mapping: Communication rows split into intra / inter
     # ----------------------------------
     gpu_ids = sorted(df[df["type"] == "compute"]["gpu_id"].unique())
-    y_map = {"comm": 0}
-    for idx, gid in enumerate(gpu_ids, start=1):
+    y_map = {"comm_intra": 0, "comm_inter": 1}
+    for idx, gid in enumerate(gpu_ids, start=2):  # GPUs start after two comm rows
         y_map[gid] = idx
 
     # Figure size based on GPU count
@@ -293,7 +292,10 @@ def plot_gantt_split(csv_path: str, *, show: bool = True, save_path: str | None 
 
     # Draw events with visibility boost for comm intervals
     for _, r in df.sort_values("start").iterrows():
-        y = y_map["comm"] if r["type"] == "comm" else y_map[r["gpu_id"]]
+        if r["type"] == "comm":
+            y = y_map["comm_inter"] if r["phase"] == "inter" else y_map["comm_intra"]
+        else:
+            y = y_map[r["gpu_id"]]
         duration = r["end"] - r["start"]
         # Enforce minimum visual width for comm events
         if r["type"] == "comm" and duration < min_width:
@@ -325,12 +327,19 @@ def plot_gantt_split(csv_path: str, *, show: bool = True, save_path: str | None 
         else:
             color = color_map.get(phase, "#cccccc")
 
-        ax.barh(y=y, width=width, left=r["start"],
-                 color=color, edgecolor="black")
+        # Use hatch for inter-node communication to make it pop out
+        hatch = "//" if phase == "inter" else None
+
+        bar = ax.barh(y=y, width=width, left=r["start"],
+                      color=color, edgecolor="black")
+        if hatch:
+            # Apply hatch pattern to bar container
+            for patch in bar:
+                patch.set_hatch(hatch)
 
     # Y ticks & labels
-    y_ticks = [0] + [y_map[gid] for gid in gpu_ids]
-    y_labels = ["Communication"] + [f"GPU{gid}" for gid in gpu_ids]
+    y_ticks = [y_map["comm_intra"], y_map["comm_inter"]] + [y_map[gid] for gid in gpu_ids]
+    y_labels = ["Comm-Intra", "Comm-Inter"] + [f"GPU{gid}" for gid in gpu_ids]
     ax.set_yticks(y_ticks)
     ax.set_yticklabels(y_labels)
 
@@ -346,7 +355,7 @@ def plot_gantt_split(csv_path: str, *, show: bool = True, save_path: str | None 
         Patch(color=fwd_palette[0], label="Forward (mb0)") ,
         Patch(color=bwd_palette[0], label="Backward (mb0)"),
         Patch(color=color_map["intra"], label="Intra-node Comm"),
-        Patch(color=color_map["inter"], label="Inter-node Comm"),
+        Patch(facecolor=color_map["inter"], hatch="//", edgecolor="black", label="Inter-node Comm"),
     ]
     ax.legend(handles=legend_handles, bbox_to_anchor=(1.04, 1), loc="upper left")
 
