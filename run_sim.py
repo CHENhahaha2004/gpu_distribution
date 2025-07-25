@@ -14,7 +14,10 @@ from net_model.ideal import IdealNet
 from net_model.rdma import RDMANet
 from trace.recorder import Recorder
 from strategy import get_strategy
+# 可视化
 from visualization.plot import plot_gantt
+# RDMA 链路指标可视化（仅在 --net rdma 时使用）
+from visualization.rdma_metrics import plot_link_utilisation, plot_comm_durations, comm_duration_table
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,6 +106,27 @@ def main() -> None:
         print(f"  Total time      : {summary['total_time']:.6f} s")
         print(f"  Compute time    : {summary['compute_time']:.6f} s")
         print(f"  Communication   : {summary['comm_time']:.6f} s ({summary['comm_ratio']*100:.2f}% of active time)")
+
+    # --------------------------
+    # RDMA link metrics plotting
+    # --------------------------
+    if args.net == "rdma":
+        try:
+            metrics = net.link_metrics()
+
+            # 折线：链路利用
+            plot_link_utilisation(metrics["utilisation"], show=args.plot)
+
+            # 柱状：排队 / 传输耗时（至多前 100 条，避免过度拥挤）
+            plot_comm_durations(metrics["transfers"], show=args.plot, top_n=100)
+
+            # 表格：打印前 10 行到终端
+            df_table = comm_duration_table(metrics["transfers"])
+            if not df_table.empty:
+                print("\nComm duration breakdown (first 10):")
+                print(df_table.head(10).to_string(index=False, float_format=lambda x: f"{x:.6f}"))
+        except Exception as exc:
+            print("Failed to render RDMA metrics:", exc)
 
     # Visualise if requested
     if args.plot:
