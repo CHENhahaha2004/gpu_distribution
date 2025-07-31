@@ -8,16 +8,16 @@ python run_sim.py --gpus 4 --strategy tensor --micro_batches 2 --plot
 import argparse
 import simpy
 
-from simulator.gpu import GPU
+from .simulator.gpu import GPU
 # Network models
-from net_model.ideal import IdealNet
-from net_model.rdma import RDMANet
-from trace.recorder import Recorder
-from strategy import get_strategy
+from .net_model.ideal import IdealNet
+from .net_model.rdma import RDMANet
+from .trace.recorder import Recorder
+from .strategy import get_strategy
 # 可视化
-from visualization.plot import plot_gantt
+from .visualization.plot import plot_gantt
 # RDMA 链路指标可视化（仅在 --net rdma 时使用）
-from visualization.rdma_metrics import plot_link_utilisation, plot_comm_durations, comm_duration_table
+from .visualization.rdma_metrics import plot_link_utilisation, plot_comm_durations, comm_duration_table
 
 
 def parse_args() -> argparse.Namespace:
@@ -132,7 +132,7 @@ def main() -> None:
     if args.plot:
         try:
             if args.plot_backend == "matplotlib":
-                from visualization.plot import plot_gantt, plot_gantt_split
+                from .visualization.plot import plot_gantt, plot_gantt_split
                 if args.plot_view == "split":
                     plot_gantt_split(args.out)
                 else:
@@ -140,10 +140,10 @@ def main() -> None:
                     plot_gantt(args.out)
             else:  # plotly backend
                 if args.plot_view == "per_gpu":
-                    from visualization.plot import plot_gantt_plotly
+                    from .visualization.plot import plot_gantt_plotly
                     plot_gantt_plotly(args.out)
                 else:
-                    from visualization.plot import plot_gantt_split, plot_gantt_by_channel
+                    from .visualization.plot import plot_gantt_split, plot_gantt_by_channel
                     if args.plot_view == "split":
                         plot_gantt_split(args.out)
                     else:

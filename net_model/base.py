@@ -19,7 +19,7 @@ class BaseNetModel(ABC):
     # Interface – must be implemented by concrete subclasses
     # ------------------------------------------------------------------
     @abstractmethod
-    def transfer(self, src: int, dst: int, size: int, bw: float):
+    def transfer(self, src: int, dst: int, size: int, bw: float, *, priority: int = 2):
         """Return a SimPy *event* for a point-to-point transfer.
 
         Parameters

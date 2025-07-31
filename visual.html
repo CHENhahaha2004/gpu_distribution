@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>大语言模型并行训练可视化平台</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#165DFF',
+                        compute: '#36B37E',
+                        communication: '#FF5630',
+                        tensor: '#6554C0',
+                        pipeline: '#FFAB00',
+                        data: '#00B8D9',
+                        background: '#F5F7FA',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .content-auto {
+                content-visibility: auto;
+            }
+            .card-shadow {
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+            }
+            .gantt-bar {
+                transition: all 0.2s ease;
+            }
+            .gantt-bar:hover {
+                transform: scaleY(1.1);
+                filter: brightness(1.1);
+            }
+        }
+    </style>
+</head>
+<body class="bg-background min-h-screen">
+    <!-- 顶部导航 -->
+    <header class="bg-white shadow-sm sticky top-0 z-10">
+        <div class="container mx-auto px-4 py-4 flex flex-wrap items-center justify-between">
+            <div class="flex items-center space-x-2">
+                <i class="fa fa-microchip text-primary text-2xl"></i>
+                <h1 class="text-xl font-bold text-gray-800">大语言模型并行训练可视化平台</h1>
+            </div>
+            
+            <div class="flex flex-wrap gap-3 mt-2 sm:mt-0">
+                <div class="flex items-center border rounded-md overflow-hidden">
+                    <button class="stage-btn px-4 py-2 bg-primary text-white" data-stage="1.1">阶段 1.1</button>
+                    <button class="stage-btn px-4 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200" data-stage="1.2">阶段 1.2</button>
+                    <button class="stage-btn px-4 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200" data-stage="1.3">阶段 1.3</button>
+                </div>
+                
+                <div class="flex items-center border rounded-md overflow-hidden" id="parallel-toggle">
+                    <button class="parallel-btn px-4 py-2 bg-primary text-white" data-parallel="tensor">张量并行</button>
+                    <button class="parallel-btn px-4 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200" data-parallel="pipeline">流水线并行</button>
+                    <button class="parallel-btn px-4 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200" data-parallel="data">数据并行</button>
+                </div>
+                
+                <div class="flex items-center border rounded-md overflow-hidden" id="optimization-toggle" style="display: none;">
+                    <button class="opt-btn px-4 py-2 bg-primary text-white" data-opt="baseline">基线方案</button>
+                    <button class="opt-btn px-4 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200" data-opt="optimized">优化方案</button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="container mx-auto px-4 py-6">
+        <!-- 指标概览卡片 -->
+        <section class="mb-8">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4">性能指标概览</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                <div class="bg-white rounded-lg p-4 card-shadow">
+                    <div class="text-sm text-gray-500 mb-1">总训练时间</div>
+                    <div class="text-2xl font-bold text-gray-800" id="total-time">0s</div>
+                </div>
+                <div class="bg-white rounded-lg p-4 card-shadow">
+                    <div class="text-sm text-gray-500 mb-1">通信时间占比</div>
+                    <div class="text-2xl font-bold text-gray-800" id="comm-ratio">0%</div>
+                </div>
+                <div class="bg-white rounded-lg p-4 card-shadow">
+                    <div class="text-sm text-gray-500 mb-1">平均通信吞吐量</div>
+                    <div class="text-2xl font-bold text-gray-800" id="throughput">0 MB/s</div>
+                </div>
+                <div class="bg-white rounded-lg p-4 card-shadow">
+                    <div class="text-sm text-gray-500 mb-1">平均通信延迟</div>
+                    <div class="text-2xl font-bold text-gray-800" id="latency">0 ms</div>
+                </div>
+                <div class="bg-white rounded-lg p-4 card-shadow">
+                    <div class="text-sm text-gray-500 mb-1">GPU平均利用率</div>
+                    <div class="text-2xl font-bold text-gray-800" id="gpu-util">0%</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 主要可视化区域 -->
+        <section class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <!-- 甘特图 -->
+            <div class="bg-white rounded-lg p-4 card-shadow">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-lg font-semibold text-gray-800">GPU任务时间线</h2>
+                    <div class="flex items-center text-sm">
+                        <div class="flex items-center mr-3">
+                            <div class="w-3 h-3 bg-compute rounded-sm mr-1"></div>
+                            <span>计算</span>
+                        </div>
+                        <div class="flex items-center">
+                            <div class="w-3 h-3 bg-communication rounded-sm mr-1"></div>
+                            <span>通信</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="h-[400px]" id="gantt-container">
+                    <!-- 甘特图将通过D3.js渲染 -->
+                    <div class="flex items-center justify-center h-full text-gray-500">
+                        <i class="fa fa-spinner fa-spin mr-2"></i> 加载甘特图数据...
+                    </div>
+                </div>
+            </div>
+
+            <!-- 网络流量图 -->
+            <div class="bg-white rounded-lg p-4 card-shadow">
+                <h2 class="text-lg font-semibold text-gray-800 mb-4">网络流量分布</h2>
+                <div class="h-[400px]">
+                    <canvas id="network-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- 计算与通信占比 -->
+            <div class="bg-white rounded-lg p-4 card-shadow">
+                <h2 class="text-lg font-semibold text-gray-800 mb-4">计算与通信时间占比</h2>
+                <div class="h-[300px]">
+                    <canvas id="time-distribution-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- 性能对比 -->
+            <div class="bg-white rounded-lg p-4 card-shadow">
+                <h2 class="text-lg font-semibold text-gray-800 mb-4">性能指标对比</h2>
+                <div class="h-[300px]">
+                    <canvas id="performance-chart"></canvas>
+                </div>
+            </div>
+        </section>
+
+        <!-- 详情面板 -->
+        <section class="bg-white rounded-lg p-4 card-shadow mb-8">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4">事件详情</h2>
+            <div id="detail-panel" class="text-gray-700">
+                <p class="text-gray-500 italic">选择时间线中的任务或时间段查看详细信息...</p>
+            </div>
+        </section>
+    </main>
+
+    <footer class="bg-white border-t mt-8 py-4">
+        <div class="container mx-auto px-4 text-center text-gray-500 text-sm">
+            大语言模型并行训练实验可视化平台 &copy; 2023
+        </div>
+    </footer>
+
+    <script>
+        // 全局变量存储当前状态
+        let currentStage = '1.1';
+        let currentParallel = 'tensor';
+        let currentOptimization = 'baseline';
+        
+        // 数据缓存
+        const dataCache = {};
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // 初始化图表
+            initCharts();
+            
+            // 加载初始数据
+            loadData();
+            
+            // 阶段切换事件
+            document.querySelectorAll('.stage-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    currentStage = this.getAttribute('data-stage');
+                    
+                    // 更新按钮样式
+                    document.querySelectorAll('.stage-btn').forEach(b => {
+                        b.classList.remove('bg-primary', 'text-white');
+                        b.classList.add('bg-gray-100', 'text-gray-700', 'hover:bg-gray-200');
+                    });
+                    this.classList.remove('bg-gray-100', 'text-gray-700', 'hover:bg-gray-200');
+                    this.classList.add('bg-primary', 'text-white');
+                    
+                    // 显示或隐藏优化切换
+                    if (currentStage === '1.3') {
+                        document.getElementById('optimization-toggle').style.display = 'flex';
+                    } else {
+                        document.getElementById('optimization-toggle').style.display = 'none';
+                    }
+                    
+                    // 加载数据
+                    loadData();
+                });
+            });
+            
+            // 并行策略切换事件
+            document.querySelectorAll('.parallel-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    currentParallel = this.getAttribute('data-parallel');
+                    
+                    // 更新按钮样式
+                    document.querySelectorAll('.parallel-btn').forEach(b => {
+                        b.classList.remove('bg-primary', 'text-white');
+                        b.classList.add('bg-gray-100', 'text-gray-700', 'hover:bg-gray-200');
+                    });
+                    this.classList.remove('bg-gray-100', 'text-gray-700', 'hover:bg-gray-200');
+                    this.classList.add('bg-primary', 'text-white');
+                    
+                    // 加载数据
+                    loadData();
+                });
+            });
+            
+            // 优化方案切换事件
+            document.querySelectorAll('.opt-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    currentOptimization = this.getAttribute('data-opt');
+                    
+                    // 更新按钮样式
+                    document.querySelectorAll('.opt-btn').forEach(b => {
+                        b.classList.remove('bg-primary', 'text-white');
+                        b.classList.add('bg-gray-100', 'text-gray-700', 'hover:bg-gray-200');
+                    });
+                    this.classList.remove('bg-gray-100', 'text-gray-700', 'hover:bg-gray-200');
+                    this.classList.add('bg-primary', 'text-white');
+                    
+                    // 加载数据
+                    loadData();
+                });
+            });
+        });
+        
+        // 初始化所有图表
+        function initCharts() {
+            // 网络流量图
+            const networkCtx = document.getElementById('network-chart').getContext('2d');
+            window.networkChart = new Chart(networkCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { 
+                            label: '带宽使用', 
+                            borderColor: '#165DFF', 
+                            backgroundColor: 'rgba(22, 93, 255, 0.1)', 
+                            tension: 0.1, 
+                            fill: true 
+                        },
+                        { 
+                            label: '等待时间', 
+                            borderColor: '#FF5630', 
+                            backgroundColor: 'transparent', 
+                            borderDash: [5, 5],
+                            tension: 0.1,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    scales: {
+                        y: { 
+                            title: { display: true, text: '带宽 (MB/s)' },
+                            position: 'left'
+                        },
+                        y1: {
+                            title: { display: true, text: '等待时间 (ms)' },
+                            position: 'right',
+                            grid: {
+                                drawOnChartArea: false
+                            }
+                        },
+                        x: { title: { display: true, text: '时间 (s)' } }
+                    }
+                }
+            });
+            
+            // 时间分布饼图
+            const timeDistCtx = document.getElementById('time-distribution-chart').getContext('2d');
+            window.timeDistChart = new Chart(timeDistCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['计算时间', '通信时间'],
+                    datasets: [{
+                        data: [0, 0],
+                        backgroundColor: ['#36B37E', '#FF5630']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'right' },
+                        tooltip: { callbacks: { label: function(ctx) {
+                            const value = ctx.raw;
+                            const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                            const percentage = Math.round((value / total) * 100);
+                            return `${ctx.label}: ${value.toFixed(2)}s (${percentage}%)`;
+                        }}}
+                    }
+                }
+            });
+            
+            // 性能对比图
+            const perfCtx = document.getElementById('performance-chart').getContext('2d');
+            window.perfChart = new Chart(perfCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['总训练时间 (s)', '平均通信延迟 (ms)', '平均吞吐量 (MB/s)'],
+                    datasets: [{
+                        label: '当前方案',
+                        data: [0, 0, 0],
+                        backgroundColor: '#165DFF'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true }
+                    }
+                }
+            });
+        }
+        
+        // 加载数据
+        function loadData() {
+            // 显示加载状态
+            showLoadingState();
+            
+            // 确定要加载的文件
+            const fileName = getFileName();
+            
+            // 检查缓存
+            if (dataCache[fileName]) {
+                processData(dataCache[fileName]);
+                return;
+            }
+            
+            // 从CSV文件加载数据（这里使用d3.csv加载，实际路径请替换）
+            // 注意：由于浏览器安全限制，直接加载本地文件可能需要通过服务器
+            d3.csv(fileName).then(data => {
+                // 缓存数据
+                dataCache[fileName] = data;
+                
+                // 处理并可视化数据
+                processData(data);
+            }).catch(error => {
+                console.error('加载数据失败:', error);
+                document.getElementById('gantt-container').innerHTML = `
+                    <div class="flex items-center justify-center h-full text-red-500">
+                        <i class="fa fa-exclamation-triangle mr-2"></i> 数据加载失败，请检查文件路径
+                    </div>
+                `;
+            });
+        }
+        
+        // 根据当前状态确定要加载的文件名
+        function getFileName() {
+            // 注意：这里使用了您提供的绝对路径，实际使用时请改为相对路径
+            if (currentStage === '1.1') {
+                return `D:/BUPT/4_summer/summercamp/gpu_ditribute/gpu_distribution/trace/task1_1_${currentParallel}.csv`;
+            } else if (currentStage === '1.2') {
+                return `D:/BUPT/4_summer/summercamp/gpu_ditribute/gpu_distribution/trace/task1_2_${currentParallel}_rdma.csv`;
+            } else { // 1.3阶段
+                if (currentOptimization === 'baseline') {
+                    return `D:/BUPT/4_summer/summercamp/gpu_ditribute/gpu_distribution/trace/task1_3_${currentParallel}_baseline.csv`;
+                } else {
+                    return `D:/BUPT/4_summer/summercamp/gpu_ditribute/gpu_distribution/trace/task1_3_${currentParallel}_optimized.csv`;
+                }
+            }
+        }
+        
+        // 处理数据并更新所有可视化
+        function processData(rawData) {
+            // 转换数据类型
+            const data = rawData.map(item => ({
+                event_id: item.event_id,
+                source_node: item.source_node,
+                source_gpu: item.source_gpu,
+                target_node: item.target_node,
+                target_gpu: item.target_gpu,
+                event_type: item.event_type,
+                data_type: item.data_type,
+                start_time: parseFloat(item.start_time),
+                end_time: parseFloat(item.end_time),
+                data_size: item.data_size ? parseFloat(item.data_size) : 0,
+                gpu_id: item.gpu_id,
+                type: item.type,
+                name: item.name,
+                start: parseFloat(item.start),
+                end: parseFloat(item.end),
+                bandwidth_used: item.bandwidth_used ? parseFloat(item.bandwidth_used) : 0,
+                wait_time: item.wait_time ? parseFloat(item.wait_time) : 0,
+                scenario: item.scenario || '',
+                optimization_strategy: item.optimization_strategy || ''
+            }));
+            
+            // 分析数据生成指标
+            const metrics = analyzeMetrics(data);
+            
+            // 更新指标卡片
+            updateMetricCards(metrics);
+            
+            // 准备甘特图数据
+            const ganttData = prepareGanttData(data);
+            
+            // 更新甘特图
+            renderGanttChart(ganttData);
+            
+            // 准备网络流量数据
+            const networkData = prepareNetworkData(data);
+            
+            // 更新网络流量图
+            updateNetworkChart(networkData);
+            
+            // 准备时间分布数据
+            const timeDistribution = prepareTimeDistribution(data);
+            
+            // 更新时间分布图表
+            updateTimeDistributionChart(timeDistribution);
+            
+            // 准备性能对比数据
+            const performanceData = preparePerformanceData(metrics);
+            
+            // 更新性能对比图表
+            updatePerformanceChart(performanceData);
+            
+            // 如果是1.3阶段，加载分析数据
+            if (currentStage === '1.3') {
+                loadAnalysisData(performanceData);
+            } else {
+                updateDetailPanel(data[0]);
+            }
+        }
+        
+        // 分析数据生成关键指标
+        function analyzeMetrics(data) {
+            // 计算总时间
+            const startTimes = data.map(item => item.start_time);
+            const endTimes = data.map(item => item.end_time);
+            const totalTime = Math.max(...endTimes) - Math.min(...startTimes);
+            
+            // 区分计算和通信事件
+            const computeEvents = data.filter(item => item.event_type === 'compute');
+            const commEvents = data.filter(item => item.event_type === 'communication');
+            
+            // 计算总计算时间和总通信时间
+            const totalComputeTime = computeEvents.reduce((sum, item) => sum + (item.end_time - item.start_time), 0);
+            const totalCommTime = commEvents.reduce((sum, item) => sum + (item.end_time - item.start_time), 0);
+            
+            // 通信时间占比
+            const totalActivityTime = totalComputeTime + totalCommTime;
+            const commRatio = totalActivityTime > 0 ? (totalCommTime / totalActivityTime) * 100 : 0;
+            
+            // 计算平均通信延迟
+            let avgLatency = 0;
+            if (commEvents.length > 0) {
+                const totalLatency = commEvents.reduce((sum, item) => sum + (item.end_time - item.start_time), 0);
+                avgLatency = totalLatency / commEvents.length * 1000; // 转换为毫秒
+            }
+            
+            // 计算平均吞吐量 (数据量/时间)
+            let avgThroughput = 0;
+            if (commEvents.length > 0) {
+                const totalData = commEvents.reduce((sum, item) => sum + item.data_size, 0);
+                avgThroughput = totalData / (totalCommTime || 1); // 避免除以零
+            }
+            
+            // 计算GPU利用率
+            const gpus = [...new Set(data.map(item => item.gpu_id))];
+            let gpuUtilization = 0;
+            
+            if (gpus.length > 0) {
+                const totalGpuTime = gpus.reduce((sum, gpu) => {
+                    const gpuEvents = data.filter(item => item.gpu_id === gpu);
+                    if (gpuEvents.length === 0) return sum;
+                    
+                    // 计算GPU活跃时间
+                    const sortedEvents = [...gpuEvents].sort((a, b) => a.start_time - b.start_time);
+                    let activeTime = 0;
+                    let lastEnd = sortedEvents[0].start_time;
+                    
+                    sortedEvents.forEach(event => {
+                        if (event.start_time > lastEnd) {
+                            // 空闲时间，不计算
+                            lastEnd = event.end_time;
+                        } else {
+                            // 累加活跃时间
+                            activeTime += Math.max(0, event.end_time - lastEnd);
+                            lastEnd = Math.max(lastEnd, event.end_time);
+                        }
+                    });
+                    
+                    return sum + (activeTime / totalTime) * 100;
+                }, 0);
+                
+                gpuUtilization = totalGpuTime / gpus.length;
+            }
+            
+            return {
+                totalTime,
+                commRatio,
+                throughput: avgThroughput,
+                latency: avgLatency,
+                gpuUtilization,
+                totalComputeTime,
+                totalCommTime,
+                computeEvents,
+                commEvents
+            };
+        }
+        
+        // 准备甘特图数据
+        function prepareGanttData(data) {
+            // 按GPU分组
+            const gpuMap = {};
+            
+            data.forEach(item => {
+                const gpuId = `${item.source_node || 'node0'}_gpu${item.gpu_id}`;
+                
+                if (!gpuMap[gpuId]) {
+                    gpuMap[gpuId] = {
+                        id: gpuId,
+                        tasks: []
+                    };
+                }
+                
+                gpuMap[gpuId].tasks.push({
+                    id: item.event_id,
+                    type: item.event_type, // 'compute' 或 'communication'
+                    start: item.start_time,
+                    end: item.end_time,
+                    details: {
+                        name: item.name,
+                        data_size: item.data_size,
+                        source: item.source_gpu ? `GPU ${item.source_gpu}` : '',
+                        target: item.target_gpu ? `GPU ${item.target_gpu}` : '',
+                        bandwidth_used: item.bandwidth_used,
+                        wait_time: item.wait_time
+                    }
+                });
+            });
+            
+            // 转换为数组并排序
+            return Object.values(gpuMap).sort((a, b) => a.id.localeCompare(b.id));
+        }
+        
+        // 准备网络流量数据
+        function prepareNetworkData(data) {
+            // 筛选通信事件
+            const commEvents = data.filter(item => item.event_type === 'communication');
+            
+            // 按时间排序
+            commEvents.sort((a, b) => a.start_time - b.start_time);
+            
+            // 提取时间点、带宽和等待时间
+            const timestamps = [...new Set(commEvents.flatMap(item => [item.start_time, item.end_time]))].sort((a, b) => a - b);
+            const bandwidthData = timestamps.map(t => {
+                const event = commEvents.find(e => e.start_time <= t && e.end_time >= t);
+                return event ? event.bandwidth_used : 0;
+            });
+            const waitTimeData = timestamps.map(t => {
+                const event = commEvents.find(e => e.start_time <= t && e.end_time >= t);
+                return event ? event.wait_time : 0;
+            });
+            
+            return {
+                timestamps,
+                bandwidth: bandwidthData,
+                waitTime: waitTimeData
+            };
+        }
+        
+        // 准备时间分布数据
+        function prepareTimeDistribution(data) {
+            const computeTime = data
+                .filter(item => item.event_type === 'compute')
+                .reduce((sum, item) => sum + (item.end_time - item.start_time), 0);
+                
+            const commTime = data
+                .filter(item => item.event_type === 'communication')
+                .reduce((sum, item) => sum + (item.end_time - item.start_time), 0);
+                
+            return {
+                compute: computeTime,
+                communication: commTime
+            };
+        }
+        
+        // 准备性能对比数据
+        function preparePerformanceData(metrics) {
+            return {
+                totalTime: metrics.totalTime,
+                latency: metrics.latency,
+                throughput: metrics.throughput
+            };
+        }
+        
+        // 加载分析数据（1.3阶段）
+        function loadAnalysisData(currentData) {
+            const analysisFile = `D:/BUPT/4_summer/summercamp/gpu_ditribute/gpu_distribution/trace/task1_3_${currentParallel}_analysis.csv`;
+            
+            d3.csv(analysisFile).then(analysisData => {
+                updatePerformanceChartWithAnalysis(currentData, analysisData);
+                updateAnalysisPanel(analysisData);
+            }).catch(error => {
+                console.error('加载分析数据失败:', error);
+                updateDetailPanel(null);
+            });
+        }
+        
+        // 更新指标卡片
+        function updateMetricCards(metrics) {
+            document.getElementById('total-time').textContent = `${metrics.totalTime.toFixed(2)}s`;
+            document.getElementById('comm-ratio').textContent = `${metrics.commRatio.toFixed(1)}%`;
+            document.getElementById('throughput').textContent = `${metrics.throughput.toFixed(1)} MB/s`;
+            document.getElementById('latency').textContent = `${metrics.latency.toFixed(1)} ms`;
+            document.getElementById('gpu-util').textContent = `${metrics.gpuUtilization.toFixed(1)}%`;
+        }
+        
+        // 渲染甘特图
+        function renderGanttChart(data) {
+            const container = document.getElementById('gantt-container');
+            container.innerHTML = ''; // 清空容器
+            
+            // 如果没有数据
+            if (data.length === 0) {
+                container.innerHTML = `
+                    <div class="flex items-center justify-center h-full text-gray-500">
+                        <i class="fa fa-info-circle mr-2"></i> 没有可用数据
+                    </div>
+                `;
+                return;
+            }
+            
+            // 设置尺寸
+            const margin = { top: 20, right: 20, bottom: 30, left: 100 };
+            const width = container.clientWidth - margin.left - margin.right;
+            const height = container.clientHeight - margin.top - margin.bottom;
+            
+            // 创建SVG
+            const svg = d3.select('#gantt-container')
+                .append('svg')
+                .attr('width', width + margin.left + margin.right)
+                .attr('height', height + margin.top + margin.bottom)
+                .append('g')
+                .attr('transform', `translate(${margin.left}, ${margin.top})`);
+            
+            // 提取所有时间点以确定比例尺范围
+            const allTimes = data.flatMap(gpu => 
+                gpu.tasks.flatMap(task => [task.start, task.end])
+            );
+            const minTime = Math.min(...allTimes);
+            const maxTime = Math.max(...allTimes);
+            
+            // 创建比例尺
+            const xScale = d3.scaleLinear()
+                .domain([minTime, maxTime])
+                .range([0, width]);
+            
+            const yScale = d3.scaleBand()
+                .domain(data.map(gpu => gpu.id))
+                .range([0, height])
+                .padding(0.2);
+            
+            // 创建x轴
+            svg.append('g')
+                .attr('transform', `translate(0, ${height})`)
+                .call(d3.axisBottom(xScale).tickFormat(d => `${d.toFixed(1)}s`))
+                .append('text')
+                .attr('x', width)
+                .attr('y', -5)
+                .attr('text-anchor', 'end')
+                .text('时间');
+            
+            // 创建y轴
+            svg.append('g')
+                .call(d3.axisLeft(yScale))
+                .append('text')
+                .attr('transform', 'rotate(-90)')
+                .attr('y', -margin.left)
+                .attr('x', -height/2)
+                .attr('text-anchor', 'middle')
+                .text('节点_GPU');
+            
+            // 绘制任务条
+            data.forEach(gpu => {
+                const gpuGroup = svg.append('g')
+                    .attr('class', `gpu-group ${gpu.id}`);
+                
+                gpu.tasks.forEach(task => {
+                    const taskBar = gpuGroup.append('rect')
+                        .attr('class', 'gantt-bar')
+                        .attr('x', xScale(task.start))
+                        .attr('y', yScale(gpu.id) + (yScale.bandwidth() - 20)/2)
+                        .attr('width', xScale(task.end) - xScale(task.start))
+                        .attr('height', 20)
+                        .attr('rx', 2)
+                        .attr('fill', task.type === 'compute' ? '#36B37E' : '#FF5630');
+                    
+                    // 添加悬停提示和点击事件
+                    taskBar.on('mouseover', function(event) {
+                        showTaskTooltip(event, task, gpu.id);
+                    }).on('mouseout', function() {
+                        hideTooltip();
+                    }).on('click', function() {
+                        showTaskDetails(task, gpu.id);
+                    });
+                });
+            });
+        }
+        
+        // 显示任务详情提示
+        function showTaskTooltip(event, task, gpuId) {
+            // 创建提示元素（如果不存在）
+            let tooltip = document.getElementById('task-tooltip');
+            if (!tooltip) {
+                tooltip = document.createElement('div');
+                tooltip.id = 'task-tooltip';
+                tooltip.className = 'absolute bg-gray-800 text-white text-xs rounded p-2 z-20 pointer-events-none';
+                document.body.appendChild(tooltip);
+            }
+            
+            // 设置提示内容
+            const typeName = task.type === 'compute' ? '计算任务' : '通信任务';
+            
+            tooltip.innerHTML = `
+                <div><strong>${gpuId}</strong></div>
+                <div>${typeName}: ${task.details.name || '未命名'}</div>
+                <div>时间: ${task.start.toFixed(1)}s - ${task.end.toFixed(1)}s</div>
+                <div>持续: ${(task.end - task.start).toFixed(1)}s</div>
+                ${task.type === 'communication' ? `<div>数据量: ${task.details.data_size.toFixed(1)}MB</div>` : ''}
+            `;
+            
+            // 定位提示
+            tooltip.style.left = (event.pageX + 10) + 'px';
+            tooltip.style.top = (event.pageY - 10) + 'px';
+            tooltip.style.display = 'block';
+        }
+        
+        // 隐藏提示
+        function hideTooltip() {
+            const tooltip = document.getElementById('task-tooltip');
+            if (tooltip) {
+                tooltip.style.display = 'none';
+            }
+        }
+        
+        // 显示任务详细信息
+        function showTaskDetails(task, gpuId) {
+            const typeName = task.type === 'compute' ? '计算任务' : '通信任务';
+            const details = task.details;
+            
+            const detailsPanel = document.getElementById('detail-panel');
+            detailsPanel.innerHTML = `
+                <h3 class="font-medium text-gray-800 mb-2">事件详情</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <p><strong>设备:</strong> ${gpuId}</p>
+                        <p><strong>事件类型:</strong> ${typeName}</p>
+                        <p><strong>事件名称:</strong> ${details.name || '未命名'}</p>
+                        <p><strong>时间范围:</strong> ${task.start.toFixed(1)}s - ${task.end.toFixed(1)}s</p>
+                        <p><strong>持续时间:</strong> ${(task.end - task.start).toFixed(1)}s</p>
+                    </div>
+                    <div>
+                        ${task.type === 'communication' ? `
+                            <p><strong>源设备:</strong> ${details.source}</p>
+                            <p><strong>目标设备:</strong> ${details.target}</p>
+                            <p><strong>数据量:</strong> ${details.data_size.toFixed(1)} MB</p>
+                        ` : ''}
+                        ${details.bandwidth_used ? `<p><strong>带宽使用:</strong> ${details.bandwidth_used.toFixed(1)} MB/s</p>` : ''}
+                        ${details.wait_time ? `<p><strong>等待时间:</strong> ${details.wait_time.toFixed(1)} ms</p>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+        
+        // 更新网络流量图表
+        function updateNetworkChart(data) {
+            window.networkChart.data.labels = data.timestamps.map(t => t.toFixed(1));
+            window.networkChart.data.datasets[0].data = data.bandwidth;
+            window.networkChart.data.datasets[1].data = data.waitTime;
+            window.networkChart.update();
+        }
+        
+        // 更新时间分布图表
+        function updateTimeDistributionChart(data) {
+            window.timeDistChart.data.datasets[0].data = [data.compute, data.communication];
+            window.timeDistChart.update();
+        }
+        
+        // 更新性能对比图表
+        function updatePerformanceChart(data) {
+            window.perfChart.data.datasets = [{
+                label: currentStage === '1.3' ? (currentOptimization === 'baseline' ? '基线方案' : '优化方案') : '当前方案',
+                data: [data.totalTime, data.latency, data.throughput],
+                backgroundColor: currentStage === '1.3' && currentOptimization === 'optimized' ? '#36B37E' : '#165DFF'
+            }];
+            window.perfChart.update();
+        }
+        
+        // 结合分析数据更新性能对比图表（1.3阶段）
+        function updatePerformanceChartWithAnalysis(currentData, analysisData) {
+            // 查找基线和优化数据
+            const baselineData = {
+                totalTime: parseFloat(analysisData.find(item => item.metric === '训练总时间')?.baseline || currentData.totalTime),
+                latency: parseFloat(analysisData.find(item => item.metric === '通信延迟')?.baseline || currentData.latency),
+                throughput: parseFloat(analysisData.find(item => item.metric === '通信吞吐量')?.baseline || currentData.throughput)
+            };
+            
+            const optimizedData = {
+                totalTime: parseFloat(analysisData.find(item => item.metric === '训练总时间')?.optimized || currentData.totalTime),
+                latency: parseFloat(analysisData.find(item => item.metric === '通信延迟')?.optimized || currentData.latency),
+                throughput: parseFloat(analysisData.find(item => item.metric === '通信吞吐量')?.optimized || currentData.throughput)
+            };
+            
+            // 更新图表
+            window.perfChart.data.datasets = [
+                {
+                    label: '基线方案',
+                    data: [baselineData.totalTime, baselineData.latency, baselineData.throughput],
+                    backgroundColor: '#165DFF'
+                },
+                {
+                    label: '优化方案',
+                    data: [optimizedData.totalTime, optimizedData.latency, optimizedData.throughput],
+                    backgroundColor: '#36B37E'
+                }
+            ];
+            window.perfChart.update();
+        }
+        
+        // 更新详情面板
+        function updateDetailPanel(firstEvent) {
+            const detailsPanel = document.getElementById('detail-panel');
+            
+            if (!firstEvent) {
+                detailsPanel.innerHTML = `
+                    <p class="text-gray-500 italic">没有可用的事件详情数据</p>
+                `;
+                return;
+            }
+            
+            let content = `
+                <h3 class="font-medium text-gray-800 mb-2">并行策略分析 (${getParallelName(currentParallel)})</h3>
+                <p>当前展示的是${currentStage}阶段的${getParallelName(currentParallel)}数据。</p>
+                <p>点击时间线上的任务可查看详细信息。</p>
+            `;
+            
+            // 添加优化策略信息（如果有）
+            if (firstEvent.optimization_strategy) {
+                content += `
+                    <div class="mt-3 p-3 bg-green-50 border border-green-200 rounded-md">
+                        <h4 class="font-medium text-green-800">优化策略</h4>
+                        <p>${firstEvent.optimization_strategy}</p>
+                    </div>
+                `;
+            }
+            
+            // 添加场景信息（如果有）
+            if (firstEvent.scenario) {
+                content += `
+                    <div class="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                        <h4 class="font-medium text-blue-800">实验场景</h4>
+                        <p>${firstEvent.scenario}</p>
+                    </div>
+                `;
+            }
+            
+            detailsPanel.innerHTML = content;
+        }
+        
+        // 更新分析面板（1.3阶段）
+        function updateAnalysisPanel(analysisData) {
+            let content = `
+                <h3 class="font-medium text-gray-800 mb-2">优化效果分析 (${getParallelName(currentParallel)})</h3>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead>
+                            <tr>
+                                <th class="px-3 py-2 bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">指标</th>
+                                <th class="px-3 py-2 bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">基线值</th>
+                                <th class="px-3 py-2 bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">优化值</th>
+                                <th class="px-3 py-2 bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">改进率</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+            `;
+            
+            // 添加分析数据行
+            analysisData.forEach(item => {
+                const improvement = parseFloat(item['improvement(%)']);
+                const improvementClass = improvement > 0 ? 'text-green-600' : improvement < 0 ? 'text-red-600' : '';
+                
+                content += `
+                    <tr>
+                        <td class="px-3 py-2 text-sm">${item.metric}</td>
+                        <td class="px-3 py-2 text-sm">${item.baseline}</td>
+                        <td class="px-3 py-2 text-sm">${item.optimized}</td>
+                        <td class="px-3 py-2 text-sm ${improvementClass}">${item['improvement(%)']}%</td>
+                    </tr>
+                `;
+            });
+            
+            content += `
+                        </tbody>
+                    </table>
+                </div>
+                <div class="mt-4">
+                    <h4 class="font-medium text-gray-800 mb-2">分析结论</h4>
+                    <p>从数据可以看出，优化方案在关键指标上有显著提升，尤其是在${getKeyImprovementMetric(analysisData)}方面。</p>
+                    <p>通信瓶颈主要源于${currentParallel === 'pipeline' ? '流水线阶段间的数据传输' : 
+                      currentParallel === 'data' ? '梯度同步时的网络拥塞' : '张量拆分后的跨GPU同步'}，
+                      通过优化策略有效缓解了这一问题。</p>
+                </div>
+            `;
+            
+            document.getElementById('detail-panel').innerHTML = content;
+        }
+        
+        // 获取并行策略的中文名称
+        function getParallelName(parallelType) {
+            const names = {
+                'tensor': '张量并行',
+                'pipeline': '流水线并行',
+                'data': '数据并行'
+            };
+            return names[parallelType] || parallelType;
+        }
+        
+        // 获取主要改进指标
+        function getKeyImprovementMetric(analysisData) {
+            return analysisData.reduce((max, item) => {
+                const improvement = parseFloat(item['improvement(%)']);
+                return improvement > parseFloat(max['improvement(%)']) ? item : max;
+            }, analysisData[0]).metric;
+        }
+        
+        // 显示加载状态
+        function showLoadingState() {
+            document.getElementById('gantt-container').innerHTML = `
+                <div class="flex items-center justify-center h-full text-gray-500">
+                    <i class="fa fa-spinner fa-spin mr-2"></i> 加载数据中...
+                </div>
+            `;
+        }
+    </script>
+</body>
+</html>

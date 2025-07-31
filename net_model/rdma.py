@@ -7,7 +7,7 @@ import simpy
 from .base import BaseNetModel
 
 # Type alias for a link-level scheduler function
-LinkScheduler = Callable[[simpy.Environment, int, int, int, float, float], simpy.events.Event]
+LinkScheduler = Callable[[simpy.Environment, int, int, int, float, float, int], simpy.events.Event]
 
 
 class RDMANet(BaseNetModel):
@@ -89,7 +89,13 @@ class RDMANet(BaseNetModel):
             # SimPy processes
             # -----------------------------------------
             def transfer(self, size: int):
-                """SimPy process representing a single RDMA P2P transfer."""
+                """SimPy process representing a single RDMA P2P transfer.
+
+                Return
+                ------
+                dict
+                    {"share_bw", "queue_time", "total_bw"}
+                """
                 start = self.env.now
 
                 with self._res.request() as req:
@@ -121,6 +127,13 @@ class RDMANet(BaseNetModel):
                     # Release capacity
                     self._inflight -= 1
                     self._log_state()
+
+                # 返回以供 GPU 日志
+                return {
+                    "share_bw": share_bw,
+                    "queue_time": q_exit - start,
+                    "total_bw": self.total_bw,
+                }
 
         # Instantiate a single shared link (inter- & intra-node unified model)
         self._link = _RDMALink(env, bandwidth=100 * 1e9 / 8, base_latency=10e-6)  # 100 Gbps → bytes/sec
@@ -154,7 +167,7 @@ class RDMANet(BaseNetModel):
     # ------------------------------------------------------------------
     # BaseNetModel implementation
     # ------------------------------------------------------------------
-    def transfer(self, src: int, dst: int, size: int, bw_unused: float):  # noqa: D401
+    def transfer(self, src: int, dst: int, size: int, bw_unused: float, *, priority: int = 2):  # noqa: D401
         src_node = self.gpu_to_node[src]
         dst_node = self.gpu_to_node[dst]
 
@@ -166,21 +179,23 @@ class RDMANet(BaseNetModel):
             latency = self.inter_lat
 
         # Delegate to active scheduler (may model queueing / contention)
-        yield self.env.process(self._scheduler(self.env, src, dst, size, bw, latency))
+        result = yield self.env.process(self._scheduler(self.env, src, dst, size, bw, latency, priority))
+        return result
 
     # ------------------------------------------------------------------
     # Built-in link scheduler (no contention)
     # ------------------------------------------------------------------
     @staticmethod
-    def _ideal_scheduler(env: simpy.Environment, src: int, dst: int, size: int, bw: float, latency: float):
+    def _ideal_scheduler(env: simpy.Environment, src: int, dst: int, size: int, bw: float, latency: float, priority: int):
         """Ideal delay = latency + size / bw."""
         duration = latency + (size / bw if bw > 0 else 0.0)
         yield env.timeout(duration)
+        return {}
 
     # ------------------------------------------------------------------
     # Built-in contention-aware scheduler (default for RDMANet)
     # ------------------------------------------------------------------
-    def _rdma_scheduler(self, env: simpy.Environment, src: int, dst: int, size: int, bw: float, latency: float):
+    def _rdma_scheduler(self, env: simpy.Environment, src: int, dst: int, size: int, bw: float, latency: float, priority: int):
         """Wrap the shared *_link.transfer* coroutine so that signature matches
         the *LinkScheduler* protocol expected by :py:meth:`transfer`. The *bw*
         & *latency* parameters are ignored because the shared link already
@@ -191,4 +206,4 @@ class RDMANet(BaseNetModel):
         # shares the same link as the bottleneck, matching the experimental
         # focus on cross-machine RDMA contention.
 
-        yield from self._link.transfer(size)
+        return (yield from self._link.transfer(size))

@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import simpy
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Optional, Any
 
 if TYPE_CHECKING:  # pragma: no cover
-    from trace.recorder import Recorder  # noqa: F401
-    from net_model.base import BaseNetModel  # noqa: F401
+    from ..trace.recorder import Recorder  # noqa: F401
+    from ..net_model.base import BaseNetModel  # noqa: F401
 
 
 class GPU:
@@ -41,47 +43,110 @@ class GPU:
     # ---------------------------------------------------------------------
     # Public SimPy processes
     # ---------------------------------------------------------------------
-    def compute(self, name: str, flop: float):
-        """Yield a *compute* process that takes time proportional to FLOPs."""
+    def compute(self, name: str, flop: float, *, scenario: Optional[str] = None,
+                optimization_strategy: Optional[str] = None):
+        """SimPy 进程：执行计算，并写入带完整字段的日志。"""
+
         start = self.env.now
         duration = flop / self.flops if self.flops > 0 else 0.0
         yield self.env.timeout(duration)
         end = self.env.now
-        self.recorder.log(self.id, "compute", name, start, end)
 
-    def send(self, dst_gpu: int, size: int):
-        """Yield a *communication* process via the provided network model.
+        # 记录事件（compute 无通信量、带宽等字段）
+        self.recorder.log_event(
+            source_node=self.node_id,
+            source_gpu=self.id,
+            target_node=self.node_id,
+            target_gpu=self.id,
+            event_type="compute",
+            data_type=name,
+            start=start,
+            end=end,
+            data_size=0,
+            scenario=scenario,
+            optimization_strategy=optimization_strategy,
+        )
 
-        This variant additionally annotates whether the transfer is intra-node
-        or inter-node so that downstream analysis can easily distinguish the
-        two cases without changing the Recorder interface.
+    def send(
+        self,
+        dst_gpu: int,
+        size: int,
+        *,
+        data_type: str = "activation",
+        priority: int = 2,
+        scenario: Optional[str] = None,
+        optimization_strategy: Optional[str] = None,
+    ):
+        """SimPy 进程：执行 point-to-point 通信，并记录完整事件。
+
+        Parameters
+        ----------
+        dst_gpu : int
+            目标 GPU id。
+        size : int
+            传输数据量（bytes）。
+        data_type : str
+            activation / gradient / log 等。
+        priority : int
+            优先级（1=highest）。
+        scenario / optimization_strategy : str | None
+            仅在任务 1.3 中用于标记场景。
         """
+
         start = self.env.now
-        # Delegate to network model which can insert contention/delay.
-        yield self.env.process(self.net_model.transfer(self.id, dst_gpu, size, self.nic_bw))
+
+        # network.transfer 可能返回度量字典
+        result = yield self.env.process(
+            self.net_model.transfer(self.id, dst_gpu, size, self.nic_bw, priority=priority)
+        )
         end = self.env.now
 
-        # -----------------------------
-        # Determine comm scope
-        # -----------------------------
-        # GPU instances may live on different nodes. We record the scope in the
-        # *name* field so that existing aggregation logic (which relies on the
-        # *type* field being exactly "compute"/"comm") remains untouched.
-        dst_node = getattr(self, "_id_to_node", {}).get(dst_gpu)
-        scope = "intra" if dst_node == self.node_id else "inter"
-        name_suffix = f" ({scope})"
+        # 解析可能的附加度量
+        bw_used_pct: Optional[float] = None
+        wait_ms: Optional[float] = None
+        if isinstance(result, dict):
+            share_bw = result.get("share_bw")  # bytes/sec
+            queue_time = result.get("queue_time")  # sec
+            total_bw = result.get("total_bw")  # bytes/sec
+            if share_bw is not None and total_bw:
+                bw_used_pct = share_bw / total_bw * 100.0
+            if queue_time is not None:
+                wait_ms = queue_time * 1e3
 
-        # Record on sender side
-        self.recorder.log(self.id, "comm", f"{self.id}->{dst_gpu}{name_suffix}", start, end)
-        # Also record the corresponding receive event on dst GPU for timeline completeness
-        self.recorder.log(dst_gpu, "comm", f"{self.id}->{dst_gpu}{name_suffix}", start, end)
+        # 写入 recorder
+        dst_node = GPU._id_to_node.get(dst_gpu, -1)
+        self.recorder.log_event(
+            source_node=self.node_id,
+            source_gpu=self.id,
+            target_node=dst_node,
+            target_gpu=dst_gpu,
+            event_type="comm",
+            data_type=data_type,
+            start=start,
+            end=end,
+            data_size=size,
+            bandwidth_used=bw_used_pct,
+            wait_time=wait_ms,
+            scenario=scenario,
+            optimization_strategy=optimization_strategy,
+        )
 
     def recv(self, src_gpu: int, size: int):
         """Explicit receive call (not currently used by strategies)."""
         start = self.env.now
         yield self.env.process(self.net_model.transfer(src_gpu, self.id, size, self.nic_bw))
         end = self.env.now
-        self.recorder.log(self.id, "comm", f"{src_gpu}->{self.id}", start, end) 
+        self.recorder.log_event(
+            source_node=GPU._id_to_node.get(src_gpu, -1),
+            source_gpu=src_gpu,
+            target_node=self.node_id,
+            target_gpu=self.id,
+            event_type="comm",
+            data_type="recv_placeholder",
+            start=start,
+            end=end,
+            data_size=size,
+        ) 
 
     # ---------------------------------------------------------------------
     # Class-level helpers

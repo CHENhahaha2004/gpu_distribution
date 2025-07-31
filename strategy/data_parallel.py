@@ -2,7 +2,7 @@ import simpy
 from typing import List
 
 from .base import ParallelStrategy
-from simulator.gpu import GPU
+from ..simulator.gpu import GPU
 
 
 class DataParallelStrategy(ParallelStrategy):
@@ -42,7 +42,7 @@ class DataParallelStrategy(ParallelStrategy):
             for node_id, grp in node_to_gpus.items():
                 leader = grp[0]
                 for g in grp[1:]:  # skip leader itself
-                    comm_events.append(env.process(g.send(leader.id, self.comm_size)))
+                    comm_events.append(env.process(g.send(leader.id, self.comm_size, data_type="gradient", priority=1)))
             yield simpy.events.AllOf(env, comm_events)
 
             # --------------------------------------------------------------
@@ -53,7 +53,7 @@ class DataParallelStrategy(ParallelStrategy):
                 num_leaders = len(leaders)
                 for idx, g in enumerate(leaders):
                     dst = leaders[(idx + 1) % num_leaders].id
-                    comm_events.append(env.process(g.send(dst, self.comm_size)))
+                    comm_events.append(env.process(g.send(dst, self.comm_size, data_type="gradient", priority=1)))
                 yield simpy.events.AllOf(env, comm_events)
 
             # --------------------------------------------------------------
@@ -63,5 +63,5 @@ class DataParallelStrategy(ParallelStrategy):
             for node_id, grp in node_to_gpus.items():
                 leader = grp[0]
                 for g in grp[1:]:
-                    comm_events.append(env.process(leader.send(g.id, self.comm_size)))
+                    comm_events.append(env.process(leader.send(g.id, self.comm_size, data_type="gradient", priority=1)))
             yield simpy.events.AllOf(env, comm_events) 

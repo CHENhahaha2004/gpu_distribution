@@ -1,0 +1,3 @@
+metric,baseline,optimized,improvement(%)
+total_time(s),0.0795897847120596,0.001,98.74355735020794
+comm_ratio,0.8751223200734466,0.0,100.0

@@ -2,7 +2,7 @@ import simpy
 from typing import List
 
 from .base import ParallelStrategy
-from simulator.gpu import GPU
+from ..simulator.gpu import GPU
 
 
 class PipelineParallelStrategy(ParallelStrategy):
@@ -42,7 +42,7 @@ class PipelineParallelStrategy(ParallelStrategy):
 
                 # Send activation to next stage (except last stage)
                 if stage_id < num_stages - 1:
-                    yield env.process(gpu.send(stage_id + 1, act_size))
+                    yield env.process(gpu.send(stage_id + 1, act_size, data_type="activation", priority=2))
                     # Notify next stage that activation is ready
                     fwd_ready[stage_id + 1][mb].succeed()
 
@@ -57,7 +57,7 @@ class PipelineParallelStrategy(ParallelStrategy):
 
                 # Send gradient to previous stage (except first stage)
                 if stage_id > 0:
-                    yield env.process(gpu.send(stage_id - 1, act_size))
+                    yield env.process(gpu.send(stage_id - 1, act_size, data_type="gradient", priority=1))
                     # Notify previous stage that gradient is ready
                     grad_ready[stage_id - 1][mb].succeed()
 
