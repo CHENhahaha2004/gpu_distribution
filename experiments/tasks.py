@@ -18,7 +18,7 @@ import simpy
 
 from ..simulator.gpu import GPU
 from ..net_model.ideal import IdealNet
-from ..net_model.rdma import RDMANet
+from ..net_model.fattree import FatTreeNet
 from ..strategy import get_strategy
 from ..trace.recorder import Recorder
 
@@ -156,13 +156,15 @@ def run_task1_2(*, output_dir: str | os.PathLike | None = None, strategy_name: s
     nodes, gpus_per_node = 4, 4
     gpu_to_node = {gid: gid // gpus_per_node for gid in range(nodes * gpus_per_node)}
 
-    net = RDMANet(env, gpu_to_node)
+    # 使用胖树拓扑替代单共享链路
+    net = FatTreeNet(env, gpu_to_node, k=4)
     gpus = _setup_cluster(env, recorder, nodes=nodes, gpus_per_node=gpus_per_node, flops=1e13, nic_bw=100e9, net_model=net)
 
     strategy = get_strategy(strategy_name, micro_batches=4, flops_per_batch=10e9, comm_size=8 * 1024 * 1024)
     env.process(strategy.run(env, gpus, recorder))
     env.run()
 
+    # 保持原始文件命名，避免下游脚本改动
     out_path = output_dir / f"task1_2_{strategy_name}_rdma.csv"
     recorder.to_csv(str(out_path))
     print(f"[Task1.2] Trace saved → {out_path.relative_to(output_dir.parent)}")
@@ -179,9 +181,8 @@ def run_task1_3(*, output_dir: str | os.PathLike | None = None, strategy_name: s
         recorder = Recorder()
 
         gpu_to_node = {gid: gid // gpus_per_node for gid in range(nodes * gpus_per_node)}
-        net = RDMANet(env, gpu_to_node)
-        # 注册调度器
-        net.register_scheduler(scheduler_factory(net._link))
+        # 使用胖树拓扑；Task-1.3 的 baseline / optimized 差异仅体现在策略，不再自定义链路调度器
+        net = FatTreeNet(env, gpu_to_node, k=4)
 
         gpus = _setup_cluster(env, recorder, nodes=nodes, gpus_per_node=gpus_per_node, flops=1e13, nic_bw=100e9, net_model=net)
         strategy = get_strategy(strategy_name, micro_batches=4, flops_per_batch=10e9, comm_size=8 * 1024 * 1024)
@@ -199,10 +200,9 @@ def run_task1_3(*, output_dir: str | os.PathLike | None = None, strategy_name: s
         recorder.to_csv(str(output_dir / fname))
         return recorder.summary(), output_dir / fname
 
-    # baseline
-    summary_base, path_base = _run_once("baseline", make_baseline_scheduler)
-    # optimised
-    summary_opt, path_opt = _run_once("optimized", make_priority_scheduler)
+    # baseline 与 optimised 均运行在 FatTree 拓扑上，保留两轮对比逻辑（策略可不同）
+    summary_base, path_base = _run_once("baseline", lambda link: None)
+    summary_opt, path_opt = _run_once("optimized", lambda link: None)
 
     # ------------------ 生成分析 CSV ------------------
     import csv

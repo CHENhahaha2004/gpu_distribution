@@ -266,10 +266,10 @@
                             fill: true 
                         },
                         { 
-                            label: '等待时间', 
-                            borderColor: '#FF5630', 
+                            label: '通信开销', 
+                            borderColor: '#00B8D9', 
                             backgroundColor: 'transparent', 
-                            borderDash: [5, 5],
+                            borderDash: [4, 4],
                             tension: 0.1,
                             yAxisID: 'y1'
                         }
@@ -288,7 +288,7 @@
                             position: 'left'
                         },
                         y1: {
-                            title: { display: true, text: '等待时间 (ms)' },
+                            title: { display: true, text: '通信开销 (ms)' },
                             position: 'right',
                             grid: {
                                 drawOnChartArea: false
@@ -381,16 +381,20 @@
         
         // 根据当前状态确定要加载的文件名
         function getFileName() {
-            // 注意：这里使用了您提供的绝对路径，实际使用时请改为相对路径
+            // 使用相对路径，HTML 文件与 trace 目录位于同级
             if (currentStage === '1.1') {
-                return `D:/BUPT/4_summer/summercamp/gpu_ditribute/gpu_distribution/trace/task1_1_${currentParallel}.csv`;
+                return `trace/task1_1_${currentParallel}.csv`;
             } else if (currentStage === '1.2') {
-                return `D:/BUPT/4_summer/summercamp/gpu_ditribute/gpu_distribution/trace/task1_2_${currentParallel}_rdma.csv`;
+                // 流水线并行和数据并行使用 RDMA 文件；tensor 并行无专用 RDMA 文件时回退至 1.1 数据
+                if (currentParallel === 'tensor') {
+                    return `trace/task1_1_tensor.csv`;
+                }
+                return `trace/task1_2_${currentParallel}_rdma.csv`;
             } else { // 1.3阶段
                 if (currentOptimization === 'baseline') {
-                    return `D:/BUPT/4_summer/summercamp/gpu_ditribute/gpu_distribution/trace/task1_3_${currentParallel}_baseline.csv`;
+                    return `trace/task1_3_${currentParallel}_baseline.csv`;
                 } else {
-                    return `D:/BUPT/4_summer/summercamp/gpu_ditribute/gpu_distribution/trace/task1_3_${currentParallel}_optimized.csv`;
+                    return `trace/task1_3_${currentParallel}_optimized.csv`;
                 }
             }
         }
@@ -404,11 +408,13 @@
                 source_gpu: item.source_gpu,
                 target_node: item.target_node,
                 target_gpu: item.target_gpu,
-                event_type: item.event_type,
+                // 兼容不同命名：将 "comm" 统一映射为 "communication"
+                event_type: (item.event_type === 'comm') ? 'communication' : item.event_type,
                 data_type: item.data_type,
                 start_time: parseFloat(item.start_time),
                 end_time: parseFloat(item.end_time),
-                data_size: item.data_size ? parseFloat(item.data_size) : 0,
+                // 将数据量由字节转换为 MB（若本身已为 MB 则无影响）
+                data_size: item.data_size ? parseFloat(item.data_size) / (1024 * 1024) : 0,
                 gpu_id: item.gpu_id,
                 type: item.type,
                 name: item.name,
@@ -578,21 +584,23 @@
             // 按时间排序
             commEvents.sort((a, b) => a.start_time - b.start_time);
             
-            // 提取时间点、带宽和等待时间
+            // 提取时间点、带宽和通信开销
             const timestamps = [...new Set(commEvents.flatMap(item => [item.start_time, item.end_time]))].sort((a, b) => a - b);
             const bandwidthData = timestamps.map(t => {
                 const event = commEvents.find(e => e.start_time <= t && e.end_time >= t);
                 return event ? event.bandwidth_used : 0;
             });
-            const waitTimeData = timestamps.map(t => {
+            const costData = timestamps.map(t => {
                 const event = commEvents.find(e => e.start_time <= t && e.end_time >= t);
-                return event ? event.wait_time : 0;
+                if (!event) return 0;
+                // 通信开销按事件持续时间 (ms) 表示
+                return (event.end_time - event.start_time) * 1000;
             });
             
             return {
                 timestamps,
                 bandwidth: bandwidthData,
-                waitTime: waitTimeData
+                cost: costData
             };
         }
         
@@ -623,7 +631,7 @@
         
         // 加载分析数据（1.3阶段）
         function loadAnalysisData(currentData) {
-            const analysisFile = `D:/BUPT/4_summer/summercamp/gpu_ditribute/gpu_distribution/trace/task1_3_${currentParallel}_analysis.csv`;
+            const analysisFile = `trace/task1_3_${currentParallel}_analysis.csv`;
             
             d3.csv(analysisFile).then(analysisData => {
                 updatePerformanceChartWithAnalysis(currentData, analysisData);
@@ -677,6 +685,7 @@
             );
             const minTime = Math.min(...allTimes);
             const maxTime = Math.max(...allTimes);
+            const isSubSecond = (maxTime - minTime) < 1;
             
             // 创建比例尺
             const xScale = d3.scaleLinear()
@@ -691,7 +700,7 @@
             // 创建x轴
             svg.append('g')
                 .attr('transform', `translate(0, ${height})`)
-                .call(d3.axisBottom(xScale).tickFormat(d => `${d.toFixed(1)}s`))
+                .call(d3.axisBottom(xScale).tickFormat(d => isSubSecond ? `${(d*1000).toFixed(1)}ms` : `${d.toFixed(2)}s`))
                 .append('text')
                 .attr('x', width)
                 .attr('y', -5)
@@ -749,12 +758,16 @@
             // 设置提示内容
             const typeName = task.type === 'compute' ? '计算任务' : '通信任务';
             
+            const timeDisplayStart = formatTime(task.start, 3);
+            const timeDisplayEnd = formatTime(task.end, 3);
+            const durationDisplay = formatTime(task.end - task.start, 3);
             tooltip.innerHTML = `
                 <div><strong>${gpuId}</strong></div>
                 <div>${typeName}: ${task.details.name || '未命名'}</div>
-                <div>时间: ${task.start.toFixed(1)}s - ${task.end.toFixed(1)}s</div>
-                <div>持续: ${(task.end - task.start).toFixed(1)}s</div>
-                ${task.type === 'communication' ? `<div>数据量: ${task.details.data_size.toFixed(1)}MB</div>` : ''}
+                <div>时间: ${timeDisplayStart} - ${timeDisplayEnd}</div>
+                <div>持续: ${durationDisplay}</div>
+                ${task.type === 'communication' ? `<div>链路: ${task.details.source} → ${task.details.target}</div>` : ''}
+                ${task.type === 'communication' ? `<div>数据量: ${task.details.data_size.toFixed(1)} MB</div>` : ''}
             `;
             
             // 定位提示
@@ -802,9 +815,11 @@
         
         // 更新网络流量图表
         function updateNetworkChart(data) {
-            window.networkChart.data.labels = data.timestamps.map(t => t.toFixed(1));
+            // 根据时间范围决定单位
+            const isSubSecondNet = (data.timestamps[data.timestamps.length - 1] || 0) < 1;
+            window.networkChart.data.labels = data.timestamps.map(t => isSubSecondNet ? (t*1000).toFixed(1) : t.toFixed(2));
             window.networkChart.data.datasets[0].data = data.bandwidth;
-            window.networkChart.data.datasets[1].data = data.waitTime;
+            window.networkChart.data.datasets[1].data = data.cost;
             window.networkChart.update();
         }
         
@@ -968,6 +983,12 @@
                     <i class="fa fa-spinner fa-spin mr-2"></i> 加载数据中...
                 </div>
             `;
+        }
+
+        // ---------------- 工具函数 ----------------
+        // 根据数值大小对时间进行格式化显示，秒 / 毫秒自适应
+        function formatTime(seconds, decimals = 2) {
+            return seconds < 1 ? `${(seconds * 1000).toFixed(decimals)}ms` : `${seconds.toFixed(decimals)}s`;
         }
     </script>
 </body>

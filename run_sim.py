@@ -12,6 +12,7 @@ from .simulator.gpu import GPU
 # Network models
 from .net_model.ideal import IdealNet
 from .net_model.rdma import RDMANet
+from .net_model.fattree import FatTreeNet
 from .trace.recorder import Recorder
 from .strategy import get_strategy
 # 可视化
@@ -39,8 +40,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--intra_lat", type=float, default=5e-6, help="Intra-node latency (s)")
     parser.add_argument("--inter_lat", type=float, default=2.5e-5, help="Inter-node latency (s)")
     parser.add_argument("--net_conf", type=str, default=None, help="Path to JSON config for network model")
-    parser.add_argument("--net", type=str, choices=["ideal", "rdma"], default="ideal",
-                        help="Network model to use (ideal or rdma)")
+    parser.add_argument("--net", type=str, choices=["ideal", "rdma", "fattree"], default="ideal",
+                        help="Network model to use (ideal / rdma / fattree)")
+    # Fat-tree specific
+    parser.add_argument("--k", type=int, default=4, help="k-ary fat-tree parameter (even number)")
     parser.add_argument("--out", type=str, default="trace.csv", help="Path to save CSV trace")
     parser.add_argument("--plot", action="store_true", help="Plot the resulting Gantt chart")
     parser.add_argument("--plot_backend", type=str, choices=["matplotlib", "plotly"], default="matplotlib",
@@ -62,26 +65,26 @@ def main() -> None:
     # Build network model
     if args.net == "ideal":
         net = IdealNet(env)
-    else:
+    elif args.net == "rdma":
         # GPU ID 到节点 ID 
         gpu_to_node = {i: (i // args.gpus_per_node) for i in range(num_gpus)}
 
         # Load overrides from JSON if provided
         import json, os
-        #准备 RDMANet 的初始化参数
         rdma_kwargs = dict(
             intra_bw=args.intra_bw,
             inter_bw=args.inter_bw,
             intra_lat=args.intra_lat,
             inter_lat=args.inter_lat,
         )
-        #若提供了网络配置 JSON 文件，则覆盖默认参数
         if args.net_conf and os.path.isfile(args.net_conf):
             with open(args.net_conf, "r") as f:
                 cfg = json.load(f)
             rdma_kwargs.update(cfg)
-        #创建基于 RDMA 的网络模型
         net = RDMANet(env, gpu_to_node, **rdma_kwargs)
+    else:  # fattree
+        gpu_to_node = {i: (i // args.gpus_per_node) for i in range(num_gpus)}
+        net = FatTreeNet(env, gpu_to_node, k=args.k)
 
     # GPUs实例化
     gpus = [GPU(env, gpu_id=i, node_id=(i // args.gpus_per_node), flops=args.flops, nic_bw=args.bw,
